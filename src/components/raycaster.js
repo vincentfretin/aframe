@@ -268,9 +268,14 @@ module.exports.Component = registerComponent('raycaster', {
     }
 
     // Emit all intersections at once on raycasting entity.
-    if (newIntersections.length) {
-      this.intersectionDetail.els = newIntersectedEls;
-      this.intersectionDetail.intersections = newIntersections;
+//    if (newIntersections.length) {
+//      this.intersectionDetail.els = newIntersectedEls;
+//      this.intersectionDetail.intersections = newIntersections;
+//      el.emit(EVENTS.INTERSECTION, this.intersectionDetail);
+//    }
+    if (intersections.length) {
+      this.intersectionDetail.els = intersectedEls;
+      this.intersectionDetail.intersections = intersections;
       el.emit(EVENTS.INTERSECTION, this.intersectionDetail);
     }
 
