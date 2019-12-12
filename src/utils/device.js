@@ -1,4 +1,4 @@
-var error = require('debug')('device:error');
+// var error = require('debug')('device:error');
 
 var vrDisplay;
 var supportsXRSession = false;
@@ -7,7 +7,7 @@ var supportsXRSession = false;
 window.addEventListener('vrdisplayactivate', function (evt) {
   var canvasEl;
   // WebXR takes priority if available.
-  if (navigator.xr) { return; }
+//   if (navigator.xr) { return; }
   canvasEl = document.createElement('canvas');
   vrDisplay = evt.display;
   // We need to make sure the canvas has a WebGL context associated with it.
@@ -18,23 +18,24 @@ window.addEventListener('vrdisplayactivate', function (evt) {
 });
 
 // Support both WebVR and WebXR APIs.
-if (navigator.xr) {
-  navigator.xr.supportsSession('immersive-vr').then(function () {
-    supportsXRSession = true;
-  }).catch(function (err) {
-    error('WebXR Request Device: ' + err.message);
+// if (navigator.xr) {
+//   navigator.xr.supportsSession('immersive-vr').then(function () {
+//     supportsXRSession = true;
+//   }).catch(function (err) {
+//     error('WebXR Request Device: ' + err.message);
+//   });
+// } else {
+if (navigator.getVRDisplays) {
+  navigator.getVRDisplays().then(function (displays) {
+    var sceneEl = document.querySelector('a-scene');
+    vrDisplay = displays.length && displays[0];
+    if (sceneEl) { sceneEl.emit('displayconnected', {vrDisplay: vrDisplay}); }
   });
-} else {
-  if (navigator.getVRDisplays) {
-    navigator.getVRDisplays().then(function (displays) {
-      var sceneEl = document.querySelector('a-scene');
-      vrDisplay = displays.length && displays[0];
-      if (sceneEl) { sceneEl.emit('displayconnected', {vrDisplay: vrDisplay}); }
-    });
-  }
 }
+// }
 
-module.exports.isWebXRAvailable = navigator.xr !== undefined;
+// module.exports.isWebXRAvailable = navigator.xr !== undefined;
+module.exports.isWebXRAvailable = false;
 
 function getVRDisplay () { return vrDisplay; }
 module.exports.getVRDisplay = getVRDisplay;
