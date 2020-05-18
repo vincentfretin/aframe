@@ -13,6 +13,7 @@ module.exports.Component = registerComponent('gltf-model', {
     var dracoLoader = this.system.getDRACOLoader();
     this.model = null;
     this.loader = new THREE.GLTFLoader();
+    this.loader.setMeshoptDecoder(THREE.MeshoptDecoder);
     if (dracoLoader) {
       this.loader.setDRACOLoader(dracoLoader);
     }

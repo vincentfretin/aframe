@@ -11,13 +11,14 @@ var THREE = require('../lib/three');
  */
 module.exports.System = registerSystem('gltf-model', {
   schema: {
-    dracoDecoderPath: {default: ''}
+    dracoDecoderPath: {default: 'https://www.gstatic.com/draco/v1/decoders/'}
   },
 
   init: function () {
     var path = this.data.dracoDecoderPath;
     this.dracoLoader = new THREE.DRACOLoader();
     this.dracoLoader.setDecoderPath(path);
+    this.dracoLoader.setDecoderConfig({type: 'js'});
   },
 
   update: function () {

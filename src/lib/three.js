@@ -20,12 +20,16 @@ if (THREE.Cache) {
 
 // TODO: Eventually include these only if they are needed by a component.
 require('../../vendor/DeviceOrientationControls'); // THREE.DeviceOrientationControls
-require('super-three/examples/js/loaders/DRACOLoader');  // THREE.DRACOLoader
-require('super-three/examples/js/loaders/GLTFLoader');  // THREE.GLTFLoader
+//require('super-three/examples/js/loaders/DRACOLoader');  // THREE.DRACOLoader
+require('../DRACOLoader');  // THREE.DRACOLoader
+var MeshoptDecoder = require('../meshopt_decoder.js');  // MeshoptDecoder
+//require('super-three/examples/js/loaders/GLTFLoader');  // THREE.GLTFLoader
+require('../GLTFLoader');  // THREE.GLTFLoader
 require('super-three/examples/js/loaders/OBJLoader');  // THREE.OBJLoader
 require('super-three/examples/js/loaders/MTLLoader');  // THREE.MTLLoader
 
 THREE.DRACOLoader.prototype.crossOrigin = 'anonymous';
+THREE.MeshoptDecoder = MeshoptDecoder
 THREE.GLTFLoader.prototype.crossOrigin = 'anonymous';
 THREE.MTLLoader.prototype.crossOrigin = 'anonymous';
 THREE.OBJLoader.prototype.crossOrigin = 'anonymous';
