@@ -4,6 +4,210 @@ import { registerComponent } from '../core/component.js';
 import * as utils from '../utils/index.js';
 var warn = utils.debug('components:layer:warn');
 
+registerComponent('stereo', {
+  schema: {
+    eye: { type: 'string', default: 'left' },
+    mode: { type: 'string', default: 'full' },
+    split: { type: 'string', default: 'horizontal' },
+    playOnClick: { type: 'boolean', default: true }
+  },
+  init: function () {
+    // Flag to acknowledge if 'click' on video has been attached to canvas
+    // Keep in mind that canvas is the last thing initialized on a scene so have to wait for the event
+    // or just check in every tick if is not undefined
+
+    this.video_click_event_added = false;
+
+    this.material_is_a_video = false;
+
+    // Check if material is a video from html tag (object3D.material.map instanceof THREE.VideoTexture does not
+    // always work
+
+    if (
+      this.el.getAttribute('material') !== null &&
+      'src' in this.el.getAttribute('material') &&
+      this.el.getAttribute('material').src !== ''
+    ) {
+      const src = this.el.getAttribute('material').src;
+
+      // If src is an object and its tagName is video...
+      if (typeof src === 'object' && 'tagName' in src && src.tagName === 'VIDEO') {
+        this.material_is_a_video = true;
+      }
+    }
+
+    const object3D = this.el.getObject3D('mesh');
+    const isValidGeometry = object3D.geometry instanceof THREE.SphereGeometry;
+
+    if (isValidGeometry) {
+      // if half-dome mode, rebuild geometry (with default 100, radius, 64 width segments and 64 height segments)
+
+      let geoDef, geometry;
+      if (this.data.mode === 'half') {
+        geoDef = this.el.getAttribute('geometry');
+        geometry = new THREE.SphereGeometry(
+          geoDef.radius || 100,
+          geoDef.segmentsWidth || 64,
+          geoDef.segmentsHeight || 64,
+          Math.PI / 2,
+          Math.PI,
+          0,
+          Math.PI
+        );
+      } else {
+        geoDef = this.el.getAttribute('geometry');
+        geometry = new THREE.SphereGeometry(
+          geoDef.radius || 100,
+          geoDef.segmentsWidth || 64,
+          geoDef.segmentsHeight || 64
+        );
+      }
+
+      // Panorama in front
+
+      object3D.rotation.y = Math.PI / 2;
+
+      // Calculate texture offset and repeat and modify UV's
+      // (cannot use in AFrame material params, since mappings are shared when pointing to the same texture,
+      // thus, one eye overrides the other) -> https://stackoverflow.com/questions/16976365/two-meshes-same-texture-different-offset
+
+      const axis = this.data.split === 'horizontal' ? 'y' : 'x';
+
+      // If left eye is set, and the split is horizontal, take the left half of the video texture.
+      // If the split is set to vertical, take the top/upper half of the video texture.
+      // UV texture coordinates start at the bottom left point of the texture, so y axis coordinates for left eye on vertical split
+      // are 0.5 - 1.0, and for the right eye are 0.0 - 0.5
+
+      const offset =
+        this.data.eye === 'left'
+          ? axis === 'y'
+            ? { x: 0, y: 0 }
+            : { x: 0, y: 0.5 }
+          : axis === 'y'
+            ? { x: 0.5, y: 0 }
+            : { x: 0, y: 0 };
+
+      const repeat = axis === 'y' ? { x: 0.5, y: 1 } : { x: 1, y: 0.5 };
+
+      const uvAttribute = geometry.attributes.uv;
+
+      for (let i = 0; i < uvAttribute.count; i++) {
+        const u = uvAttribute.getX(i) * repeat.x + offset.x;
+        const v = uvAttribute.getY(i) * repeat.y + offset.y;
+
+        uvAttribute.setXY(i, u, v);
+      }
+
+      // Needed in BufferGeometry to update UVs
+
+      uvAttribute.needsUpdate = true;
+
+      this.originalGeometry = object3D.geometry;
+      object3D.geometry = geometry;
+
+      // No need to attach video click if not a video
+      this.video_click_event_added = !this.material_is_a_video;
+    } else {
+      // No need to attach video click if not a sphere
+      this.video_click_event_added = true;
+    }
+  },
+
+  remove: function () {
+    const object3D = this.el.getObject3D('mesh');
+    object3D.geometry.dispose();
+    if (this.originalGeometry) {
+      object3D.geometry = this.originalGeometry;
+    }
+  },
+
+  // On element update, put in the right layer, 0:both, 1:left, 2:right (spheres or not)
+
+  update: function () {
+    const object3D = this.el.getObject3D('mesh');
+    const data = this.data;
+
+    if (data.eye === 'both') {
+      object3D.layers.set(0);
+    } else {
+      object3D.layers.set(data.eye === 'left' ? 1 : 2);
+    }
+  },
+
+  tick: function () {
+    // If this value is false, it means that (a) this is a video on a sphere [see init method]
+    // and (b) of course, tick is not added
+
+    if (!this.video_click_event_added && this.data.playOnClick) {
+      if (typeof this.el.sceneEl.canvas !== 'undefined') {
+        // Get video DOM
+
+        const object3D = this.el.getObject3D('mesh');
+        this.videoEl = object3D.material.map.image;
+
+        // On canvas click, play video element. Use self to not lose track of object into event handler
+
+        const self = this;
+
+        this.el.sceneEl.canvas.onclick = function () {
+          self.videoEl.play();
+        };
+
+        // Signal that click event is added
+        this.video_click_event_added = true;
+      }
+    }
+  }
+});
+
+// Sets the 'default' eye viewed by camera in non-VR mode
+
+registerComponent('stereocam', {
+  schema: {
+    eye: { type: 'string', default: 'left' }
+  },
+
+  // Cam is not attached on init, so use a flag to do this once at 'tick'
+
+  // Use update every tick if flagged as 'not changed yet'
+
+  init: function () {
+    // Flag to register if cam layer has already changed
+    this.layer_changed = false;
+  },
+
+  tick: function () {
+    const originalData = this.data;
+
+    // If layer never changed
+
+    if (!this.layer_changed) {
+      // because stereocam component should be attached to an a-camera element
+      // need to get down to the root PerspectiveCamera before addressing layers
+
+      // Gather the children of this a-camera and identify types
+
+      const childrenTypes = [];
+
+      this.el.object3D.children.forEach(function (item, index) {
+        childrenTypes[index] = item.type;
+      });
+
+      // Retrieve the PerspectiveCamera
+      const rootIndex = childrenTypes.indexOf('PerspectiveCamera');
+      const rootCam = this.el.object3D.children[rootIndex];
+
+      if (originalData.eye === 'both') {
+        rootCam.layers.enable(1);
+        rootCam.layers.enable(2);
+      } else {
+        rootCam.layers.enable(originalData.eye === 'left' ? 1 : 2);
+      }
+      this.layer_changed = true;
+    }
+  }
+});
+
 export var Component = registerComponent('layer', {
   schema: {
     type: {default: 'quad', oneOf: ['mono-equirect', 'stereo-left-right-equirect', 'stereo-top-bottom-equirect', 'quad', 'monocubemap', 'stereocubemap']},
@@ -117,6 +321,7 @@ export var Component = registerComponent('layer', {
     this.el.sceneEl.systems.material.loadTexture(src, {src: src}, function textureLoaded (texture) {
       self.el.sceneEl.renderer.initTexture(texture);
       self.texture = texture;
+      self.updateSpheres();
     });
   },
 
@@ -281,6 +486,8 @@ export var Component = registerComponent('layer', {
         space: this.referenceSpace,
         layout: eqrtLayout
       });
+      if (this.leftEyeSphere) { this.leftEyeSphere.object3D.visible = false; }
+      if (this.rightEyeSphere) { this.rightEyeSphere.object3D.visible = false; }
     } else {
       var eqrtTextureWidth = this.texture.image.width;
       var eqrtTextureHeight = this.texture.image.height;
@@ -379,6 +586,63 @@ export var Component = registerComponent('layer', {
     if (this.quadPanelEl) {
       this.quadPanelEl.object3D.visible = !this.layerEnabled;
     }
+    if (this.leftEyeSphere) {
+      this.updateSpheresVisibility();
+    }
+  },
+
+  updateSpheres: function () {
+    var materialData = {
+      shader: 'flat',
+      minFilter: 'linear',
+      side: 'back',
+      src: this.data.src
+    };
+    var sphereData = {
+      primitive: 'sphere',
+      radius: 198,
+      segmentsWidth: 64,
+      segmentsHeight: 64
+    };
+    var leftEyeSphere = this.leftEyeSphere;
+    if (!this.leftEyeSphere) {
+      leftEyeSphere = this.leftEyeSphere = document.createElement('a-entity');
+      this.el.appendChild(leftEyeSphere);
+    }
+
+    leftEyeSphere.setAttribute('material', materialData);
+    leftEyeSphere.setAttribute('geometry', sphereData);
+    leftEyeSphere.setAttribute('scale', '-1 1 1');
+    leftEyeSphere.object3D.visible = true;
+
+    var rightEyeSphere = this.rightEyeSphere;
+    if (!this.rightEyeSphere) {
+      rightEyeSphere = this.rightEyeSphere = document.createElement('a-entity');
+      this.el.appendChild(rightEyeSphere);
+    }
+
+    rightEyeSphere.setAttribute('material', materialData);
+    rightEyeSphere.setAttribute('geometry', sphereData);
+    rightEyeSphere.setAttribute('scale', '-1 1 1');
+
+    this.el.sceneEl.camera.el.setAttribute('stereocam', 'eye: left');
+    if (this.data.type === 'mono-equirect') {
+      setTimeout(() => {
+        leftEyeSphere.getObject3D('mesh').rotation.y = Math.PI / 2; // center pano
+      });
+      leftEyeSphere.removeAttribute('stereo'); // this will switch back to original sphere geometry
+    } else {
+      var split = this.data.type === 'stereo-left-right-equirect' ? 'horizontal' : 'vertical';
+      var mode = this.data.is180 ? 'half' : 'full';
+      leftEyeSphere.setAttribute('stereo', {eye: 'left', split: split, mode: mode}); // stereo component requires material component to be set first
+      rightEyeSphere.setAttribute('stereo', {eye: 'right', split: split, mode: mode});
+    }
+    this.updateSpheresVisibility();
+  },
+
+  updateSpheresVisibility: function () {
+    this.leftEyeSphere.object3D.visible = !this.layerEnabled;
+    this.rightEyeSphere.object3D.visible = !this.layerEnabled && this.data.type !== 'mono-equirect';
   },
 
   updateQuadPanel: function () {
@@ -438,12 +702,18 @@ export var Component = registerComponent('layer', {
     if (this.quadPanelEl) {
       this.quadPanelEl.object3D.visible = false;
     }
+    if (this.leftEyeSphere) {
+      this.updateSpheresVisibility();
+    }
   },
 
   onExitVR: function () {
     this.layerEnabled = false;
     if (this.quadPanelEl) {
       this.quadPanelEl.object3D.visible = true;
+    }
+    if (this.leftEyeSphere) {
+      this.updateSpheresVisibility();
     }
     this.destroyLayer();
   },
