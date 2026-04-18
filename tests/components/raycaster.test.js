@@ -435,6 +435,187 @@ suite('raycaster', function () {
     });
   });
 
+  suite('BatchedMesh raycasting', function () {
+    var hostEl;
+    var sentinelA;
+    var sentinelB;
+    var batchedMesh;
+
+    setup(function (done) {
+      el.setAttribute('position', '0 0 1');
+      el.setAttribute('raycaster', {near: 0.1, far: 10});
+
+      hostEl = document.createElement('a-entity');
+      sentinelA = document.createElement('a-entity');
+      sentinelB = document.createElement('a-entity');
+      sentinelA.setAttribute('id', 'sentinelA');
+      sentinelB.setAttribute('id', 'sentinelB');
+
+      // Two unit boxes batched into one mesh, one in front of the raycaster (-1 Z)
+      // and one to the side (-3 X). Only the first should be hit by the default ray.
+      var geomA = new THREE.BoxGeometry(1, 1, 1);
+      var geomB = new THREE.BoxGeometry(1, 1, 1);
+      batchedMesh = new THREE.BatchedMesh(2, 1024, 2048, new THREE.MeshBasicMaterial());
+      var idA = batchedMesh.addGeometry(geomA);
+      var idB = batchedMesh.addGeometry(geomB);
+      var inA = batchedMesh.addInstance(idA);
+      var inB = batchedMesh.addInstance(idB);
+      batchedMesh.setMatrixAt(inA, new THREE.Matrix4().makeTranslation(0, 0, -1));
+      batchedMesh.setMatrixAt(inB, new THREE.Matrix4().makeTranslation(-3, 0, 0));
+      batchedMesh.userData.batchIdToEl = [];
+      batchedMesh.userData.batchIdToEl[inA] = sentinelA;
+      batchedMesh.userData.batchIdToEl[inB] = sentinelB;
+
+      hostEl.addEventListener('loaded', function () {
+        hostEl.setObject3D('mesh', batchedMesh);
+        setTimeout(() => { done(); });
+      });
+      sceneEl.appendChild(sentinelA);
+      sceneEl.appendChild(sentinelB);
+      sceneEl.appendChild(hostEl);
+    });
+
+    test('resolves intersection to per-instance entity via batchIdToEl', function (done) {
+      el.addEventListener('raycaster-intersection', function () {
+        assert.equal(component.intersectedEls[0], sentinelA);
+        done();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+
+    test('emits raycaster-intersected on the per-instance entity', function (done) {
+      sentinelA.addEventListener('raycaster-intersected', function (evt) {
+        assert.equal(evt.detail.el, el);
+        done();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+
+    test('emits closest-entity-changed when ray moves between instances', function (done) {
+      // First hit sentinelA with the default ray.
+      el.addEventListener('raycaster-intersection', function onFirst () {
+        el.removeEventListener('raycaster-intersection', onFirst);
+        el.addEventListener('raycaster-closest-entity-changed', function (evt) {
+          assert.equal(evt.detail.els[0], sentinelB);
+          done();
+        });
+        // Aim at sentinelB (same batched mesh, different instance).
+        el.setAttribute('rotation', '0 70 0');
+        sceneEl.object3D.updateMatrixWorld();
+        component.tock();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+
+    test('emits raycaster-intersected-cleared on old instance when ray moves off it', function (done) {
+      sentinelA.addEventListener('raycaster-intersected', function onHit () {
+        sentinelA.removeEventListener('raycaster-intersected', onHit);
+        sentinelA.addEventListener('raycaster-intersected-cleared', function (evt) {
+          assert.equal(evt.detail.el, el);
+          done();
+        }, {once: true});
+        el.setAttribute('rotation', '0 70 0');
+        sceneEl.object3D.updateMatrixWorld();
+        component.tock();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+
+    test('getIntersection returns the hit for the per-instance entity', function (done) {
+      el.addEventListener('raycaster-intersection', function () {
+        assert.ok(component.getIntersection(sentinelA));
+        assert.notOk(component.getIntersection(sentinelB));
+        done();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+
+    test('falls back to host entity when batchIdToEl map is absent', function (done) {
+      delete batchedMesh.userData.batchIdToEl;
+      el.addEventListener('raycaster-intersection', function () {
+        assert.equal(component.intersectedEls[0], hostEl);
+        done();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+  });
+
+  suite('InstancedMesh raycasting', function () {
+    var hostEl;
+    var sentinelA;
+    var sentinelB;
+    var instancedMesh;
+
+    setup(function (done) {
+      el.setAttribute('position', '0 0 1');
+      el.setAttribute('raycaster', {near: 0.1, far: 10});
+
+      hostEl = document.createElement('a-entity');
+      sentinelA = document.createElement('a-entity');
+      sentinelB = document.createElement('a-entity');
+      sentinelA.setAttribute('id', 'instA');
+      sentinelB.setAttribute('id', 'instB');
+
+      var geom = new THREE.BoxGeometry(1, 1, 1);
+      var mat = new THREE.MeshBasicMaterial();
+      instancedMesh = new THREE.InstancedMesh(geom, mat, 2);
+      instancedMesh.setMatrixAt(0, new THREE.Matrix4().makeTranslation(0, 0, -1));
+      instancedMesh.setMatrixAt(1, new THREE.Matrix4().makeTranslation(-3, 0, 0));
+      instancedMesh.instanceMatrix.needsUpdate = true;
+      instancedMesh.userData.instanceIdToEl = [sentinelA, sentinelB];
+
+      hostEl.addEventListener('loaded', function () {
+        hostEl.setObject3D('mesh', instancedMesh);
+        setTimeout(() => { done(); });
+      });
+      sceneEl.appendChild(sentinelA);
+      sceneEl.appendChild(sentinelB);
+      sceneEl.appendChild(hostEl);
+    });
+
+    test('resolves intersection to per-instance entity via instanceIdToEl', function (done) {
+      el.addEventListener('raycaster-intersection', function () {
+        assert.equal(component.intersectedEls[0], sentinelA);
+        done();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+
+    test('emits raycaster-intersected on the per-instance entity', function (done) {
+      sentinelA.addEventListener('raycaster-intersected', function () {
+        done();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+
+    test('falls back to host entity when instanceIdToEl map is absent', function (done) {
+      delete instancedMesh.userData.instanceIdToEl;
+      el.addEventListener('raycaster-intersection', function () {
+        assert.equal(component.intersectedEls[0], hostEl);
+        done();
+      });
+      sceneEl.object3D.updateMatrixWorld();
+      component.refreshObjects();
+      component.tock();
+    });
+  });
+
   suite('updateOriginDirection', function () {
     test('updates ray origin if position changes', function () {
       var origin;

@@ -233,6 +233,9 @@ export var Component = registerComponent('raycaster', {
     this.raycaster.camera = null;
 
     // Only keep intersections against objects that have a reference to an entity.
+    // For BatchedMesh / InstancedMesh, per-instance entity resolution is supported via
+    // `object.userData.batchIdToEl` / `object.userData.instanceIdToEl` maps, so each
+    // instance of a shared mesh can map to its own a-entity.
     intersections.length = 0;
     intersectedEls.length = 0;
     for (i = 0; i < rawIntersections.length; i++) {
@@ -241,9 +244,10 @@ export var Component = registerComponent('raycaster', {
       if (data.showLine && intersection.object === el.getObject3D('line')) {
         continue;
       }
-      if (intersection.object.el) {
+      var resolvedEl = resolveIntersectionEl(intersection);
+      if (resolvedEl) {
         intersections.push(intersection);
-        intersectedEls.push(intersection.object.el);
+        intersectedEls.push(resolvedEl);
       }
     }
 
@@ -251,9 +255,9 @@ export var Component = registerComponent('raycaster', {
     newIntersections.length = 0;
     newIntersectedEls.length = 0;
     for (i = 0; i < intersections.length; i++) {
-      if (prevIntersectedEls.indexOf(intersections[i].object.el) === -1) {
+      if (prevIntersectedEls.indexOf(intersectedEls[i]) === -1) {
         newIntersections.push(intersections[i]);
-        newIntersectedEls.push(intersections[i].object.el);
+        newIntersectedEls.push(intersectedEls[i]);
       }
     }
 
@@ -285,7 +289,7 @@ export var Component = registerComponent('raycaster', {
     if (prevIntersectedEls.length === 0 && intersections.length > 0 ||
         prevIntersectedEls.length > 0 && intersections.length === 0 ||
         (prevIntersectedEls.length && intersections.length &&
-        prevIntersectedEls[0] !== intersections[0].object.el)) {
+        prevIntersectedEls[0] !== intersectedEls[0])) {
       this.intersectionDetail.els = this.intersectedEls;
       this.intersectionDetail.intersections = intersections;
       el.emit(EVENTS.INTERSECTION_CLOSEST_ENTITY_CHANGED, this.intersectionDetail);
@@ -320,7 +324,7 @@ export var Component = registerComponent('raycaster', {
     var intersection;
     for (i = 0; i < this.intersections.length; i++) {
       intersection = this.intersections[i];
-      if (intersection.object.el === el) { return intersection; }
+      if (resolveIntersectionEl(intersection) === el) { return intersection; }
     }
     return null;
   },
@@ -460,4 +464,29 @@ function copyArray (a, b) {
   for (i = 0; i < b.length; i++) {
     a[i] = b[i];
   }
+}
+
+/**
+ * Resolve the a-entity associated with an intersection.
+ *
+ * For plain meshes, returns `intersection.object.el`. For BatchedMesh and InstancedMesh,
+ * per-instance resolution is supported via userData maps keyed by the respective id:
+ *   - batchedMesh.userData.batchIdToEl[batchId]
+ *   - instancedMesh.userData.instanceIdToEl[instanceId]
+ * Apps populate these maps when they build the shared mesh so that hover / click events
+ * and intersection tracking fire on the correct per-instance entity.
+ *
+ * @param {object} intersection - three.js raycast intersection.
+ * @returns {AEntity|null}
+ */
+function resolveIntersectionEl (intersection) {
+  var obj = intersection.object;
+  if (obj.isBatchedMesh && intersection.batchId !== undefined) {
+    var batchMap = obj.userData.batchIdToEl;
+    if (batchMap && batchMap[intersection.batchId]) { return batchMap[intersection.batchId]; }
+  } else if (obj.isInstancedMesh && intersection.instanceId !== undefined) {
+    var instMap = obj.userData.instanceIdToEl;
+    if (instMap && instMap[intersection.instanceId]) { return instMap[intersection.instanceId]; }
+  }
+  return obj.el || null;
 }
