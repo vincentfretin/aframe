@@ -11769,6 +11769,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 var error = _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.debug('components:material:error');
+var disposeMaterial = _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.material.disposeMaterial;
 
 /**
  * Material component.
@@ -11792,6 +11793,9 @@ var Component = (0,_core_component_js__WEBPACK_IMPORTED_MODULE_1__.registerCompo
     },
     flatShading: {
       default: false
+    },
+    material: {
+      type: 'material'
     },
     offset: {
       type: 'vec2',
@@ -11855,6 +11859,7 @@ var Component = (0,_core_component_js__WEBPACK_IMPORTED_MODULE_1__.registerCompo
   },
   init: function () {
     this.material = null;
+    this.materialIsShared = false;
   },
   /**
    * Update or create material.
@@ -11863,11 +11868,20 @@ var Component = (0,_core_component_js__WEBPACK_IMPORTED_MODULE_1__.registerCompo
    */
   update: function (oldData) {
     var data = this.data;
+
+    // Material asset provided (e.g., `material: #myMaterial`). Use the shared material
+    // as-is; all other properties are managed by the <a-material> asset and ignored here.
+    if (data.material) {
+      if (this.material !== data.material) {
+        this.setMaterial(data.material, true);
+      }
+      return;
+    }
     if (!this.shader || data.shader !== oldData.shader) {
       this.updateShader(data.shader);
     }
     this.shader.update(this.data);
-    this.updateMaterial(oldData);
+    this.updateMaterial();
   },
   updateSchema: function (data) {
     var currentShader;
@@ -11895,6 +11909,10 @@ var Component = (0,_core_component_js__WEBPACK_IMPORTED_MODULE_1__.registerCompo
     var tickProperties;
     function tickTime(time, delta) {
       var key;
+      // No shader instance to update when using a shared material asset.
+      if (!self.shader) {
+        return;
+      }
       for (key in tickProperties) {
         tickProperties[key] = time;
       }
@@ -11934,36 +11952,11 @@ var Component = (0,_core_component_js__WEBPACK_IMPORTED_MODULE_1__.registerCompo
   },
   /**
    * Set and update base material properties.
-   * Set `needsUpdate` when needed.
+   * `updateBaseMaterial` sets `needsUpdate` when needed, using the material
+   * itself as the source of truth.
    */
-  updateMaterial: function (oldData) {
-    var data = this.data;
-    var material = this.material;
-    var oldDataHasKeys;
-
-    // Base material properties.
-    material.alphaTest = data.alphaTest;
-    material.depthTest = data.depthTest !== false;
-    material.depthWrite = data.depthWrite !== false;
-    material.opacity = data.opacity;
-    material.flatShading = data.flatShading;
-    material.side = parseSide(data.side);
-    material.transparent = data.transparent !== false || data.opacity < 1.0;
-    material.vertexColors = data.vertexColorsEnabled;
-    material.visible = data.visible;
-    material.blending = parseBlending(data.blending);
-    // three.js r178+ requires premultipliedAlpha for MultiplyBlending and
-    // SubtractiveBlending, so force it on regardless of the user-supplied value.
-    material.premultipliedAlpha = data.blending === 'multiply' || data.blending === 'subtractive' ? true : data.premultipliedAlpha;
-    material.dithering = data.dithering;
-
-    // Check if material needs update.
-    for (oldDataHasKeys in oldData) {
-      break;
-    }
-    if (oldDataHasKeys && (oldData.alphaTest !== data.alphaTest || oldData.side !== data.side || oldData.vertexColorsEnabled !== data.vertexColorsEnabled)) {
-      material.needsUpdate = true;
-    }
+  updateMaterial: function () {
+    _utils_index_js__WEBPACK_IMPORTED_MODULE_0__.material.updateBaseMaterial(this.material, this.data);
   },
   /**
    * Remove material on remove (callback).
@@ -11976,23 +11969,35 @@ var Component = (0,_core_component_js__WEBPACK_IMPORTED_MODULE_1__.registerCompo
     if (object3D) {
       object3D.material = defaultMaterial;
     }
-    disposeMaterial(material, this.system);
+    // Shared materials (via `material` property) are owned by their <a-material> asset.
+    if (!this.materialIsShared) {
+      disposeMaterial(material, this.system);
+    }
   },
   /**
    * (Re)create new material. Has side-effects of setting `this.material` and updating
    * material registration in scene.
    *
    * @param {THREE.Material} material - Material to register.
+   * @param {boolean} [isShared=false] - Whether the material is a shared material asset,
+   *        in which case this component does not own (dispose/register) it.
    */
-  setMaterial: function (material) {
+  setMaterial: function (material, isShared) {
     var el = this.el;
     var mesh;
     var system = this.system;
-    if (this.material) {
+    if (this.material && !this.materialIsShared) {
       disposeMaterial(this.material, system);
     }
     this.material = material;
-    system.registerMaterial(material);
+    this.materialIsShared = !!isShared;
+    if (isShared) {
+      // Discard shader instance tied to the previous own material, so a new one is
+      // created if this component goes back to managing its own material.
+      this.shader = null;
+    } else {
+      system.registerMaterial(material);
+    }
 
     // Set on mesh. If mesh does not exist, wait for it.
     mesh = el.getObject3D('mesh');
@@ -12009,77 +12014,6 @@ var Component = (0,_core_component_js__WEBPACK_IMPORTED_MODULE_1__.registerCompo
     }
   }
 });
-
-/**
- * Return a three.js constant determining which material face sides to render
- * based on the side parameter (passed as a component property).
- *
- * @param {string} [side=front] - `front`, `back`, or `double`.
- * @returns {number} THREE.FrontSide, THREE.BackSide, or THREE.DoubleSide.
- */
-function parseSide(side) {
-  switch (side) {
-    case 'back':
-      {
-        return three__WEBPACK_IMPORTED_MODULE_3__.BackSide;
-      }
-    case 'double':
-      {
-        return three__WEBPACK_IMPORTED_MODULE_3__.DoubleSide;
-      }
-    default:
-      {
-        // Including case `front`.
-        return three__WEBPACK_IMPORTED_MODULE_3__.FrontSide;
-      }
-  }
-}
-
-/**
- * Return a three.js constant determining blending
- *
- * @param {string} [blending=normal] - `none`, additive`, `subtractive`,`multiply` or `normal`.
- * @returns {number}
- */
-function parseBlending(blending) {
-  switch (blending) {
-    case 'none':
-      {
-        return three__WEBPACK_IMPORTED_MODULE_3__.NoBlending;
-      }
-    case 'additive':
-      {
-        return three__WEBPACK_IMPORTED_MODULE_3__.AdditiveBlending;
-      }
-    case 'subtractive':
-      {
-        return three__WEBPACK_IMPORTED_MODULE_3__.SubtractiveBlending;
-      }
-    case 'multiply':
-      {
-        return three__WEBPACK_IMPORTED_MODULE_3__.MultiplyBlending;
-      }
-    default:
-      {
-        return three__WEBPACK_IMPORTED_MODULE_3__.NormalBlending;
-      }
-  }
-}
-
-/**
- * Dispose of material from memory and unsubscribe material from scene updates like fog.
- */
-function disposeMaterial(material, system) {
-  material.dispose();
-  system.unregisterMaterial(material);
-
-  // Dispose textures on this material
-  Object.keys(material).filter(function (propName) {
-    return material[propName] && material[propName].isTexture;
-  }).forEach(function (mapName) {
-    material[mapName].dispose();
-  });
-}
 
 /***/ }),
 
@@ -19053,10 +18987,13 @@ class AAssets extends _a_node_js__WEBPACK_IMPORTED_MODULE_0__.ANode {
       loaded.push(mediaElementLoaded(mediaEl));
     }
 
-    // Wait for <a-asset-item>s
+    // Wait for <a-asset-item>s and <a-material>s.
     children = this.getChildren();
     children.forEach(function (child) {
-      if (!child.isAssetItem || !child.hasAttribute('src')) {
+      // Check tagName instead of a flag for <a-material> as the child might not have
+      // been upgraded yet when the assets element connects.
+      var isLoadableAssetItem = child.isAssetItem && child.hasAttribute('src');
+      if (!isLoadableAssetItem && child.tagName !== 'A-MATERIAL') {
         return;
       }
       loaded.push(new Promise(function waitForLoaded(resolve, reject) {
@@ -20289,6 +20226,302 @@ customElements.define('a-entity', AEntity);
 
 /***/ }),
 
+/***/ "./src/core/a-material.js":
+/*!********************************!*\
+  !*** ./src/core/a-material.js ***!
+  \********************************/
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony import */ var _a_node_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./a-node.js */ "./src/core/a-node.js");
+/* harmony import */ var _component_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./component.js */ "./src/core/component.js");
+/* harmony import */ var _shader_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./shader.js */ "./src/core/shader.js");
+/* harmony import */ var _schema_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./schema.js */ "./src/core/schema.js");
+/* harmony import */ var _propertyTypes_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./propertyTypes.js */ "./src/core/propertyTypes.js");
+/* harmony import */ var _utils_styleParser_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ../utils/styleParser.js */ "./src/utils/styleParser.js");
+/* harmony import */ var _utils_index_js__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ../utils/index.js */ "./src/utils/index.js");
+/* global customElements */
+
+
+
+
+
+
+
+var warn = _utils_index_js__WEBPACK_IMPORTED_MODULE_6__.debug('core:a-material:warn');
+
+/**
+ * Material asset element (`<a-material>`), defined within `<a-assets>`.
+ *
+ * Creates a THREE.Material from a shader (e.g., standard, flat) and per-attribute
+ * properties during scene loading so it can be shared across entities via the
+ * `material` property type (e.g., `material="material: #myMaterial"`).
+ *
+ * Properties are set as individual HTML attributes following the material component
+ * base schema and the schema of the selected shader:
+ *
+ *   <a-material id="wood" shader="standard" src="#woodTexture" roughness="0.8"></a-material>
+ *
+ * @member {object} material - Underlying THREE.Material, created lazily.
+ * @member {object} shader - A-Frame shader instance backing the material.
+ * @member {object} data - Parsed property data (base material + shader schema).
+ */
+class AMaterial extends _a_node_js__WEBPACK_IMPORTED_MODULE_0__.ANode {
+  constructor() {
+    super();
+    this.isMaterialAsset = true;
+    this.material = null;
+    this.shader = null;
+    this.data = null;
+    this.schema = null;
+    this.attrNameMap = null;
+    this.shaderUpdated = false;
+  }
+  doConnectedCallback() {
+    super.doConnectedCallback();
+    if (!this.isInlineMaterial && (!this.parentNode || !this.parentNode.isAssets)) {
+      warn('<a-material> should be a child of <a-assets>.');
+    }
+    this.getMaterial();
+    if (this.sceneEl && this.sceneEl.systems.material) {
+      // Texture loading was deferred if the material was created before the scene
+      // systems were available (e.g., on-demand creation by the property type parser).
+      if (!this.shaderUpdated) {
+        this.shader.update(this.data);
+        this.shaderUpdated = true;
+      }
+      this.sceneEl.systems.material.registerMaterial(this.material);
+    }
+    this.loadWhenTexturesLoaded();
+  }
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (!this.material) {
+      return;
+    }
+    if (this.sceneEl && this.sceneEl.systems && this.sceneEl.systems.material) {
+      _utils_index_js__WEBPACK_IMPORTED_MODULE_6__.material.disposeMaterial(this.material, this.sceneEl.systems.material);
+    } else {
+      this.material.dispose();
+    }
+    this.material = null;
+    this.shader = null;
+    this.shaderUpdated = false;
+  }
+  attributeChangedCallback(attr, oldVal, newVal) {
+    var key;
+    super.attributeChangedCallback(attr, oldVal, newVal);
+    if (!this.material) {
+      return;
+    }
+    key = this.attrNameMap[attr.toLowerCase()];
+    if (!key) {
+      return;
+    }
+    if (key === 'shader') {
+      warn('Cannot change the shader of <a-material> after creation.');
+      return;
+    }
+    this.data[key] = (0,_schema_js__WEBPACK_IMPORTED_MODULE_3__.parseProperty)(newVal === null ? undefined : newVal, this.schema[key]);
+    this.shader.update(this.data);
+    _utils_index_js__WEBPACK_IMPORTED_MODULE_6__.material.updateBaseMaterial(this.material, this.data);
+  }
+
+  /**
+   * Return the THREE.Material, creating it if it does not exist yet.
+   *
+   * @returns {object} THREE.Material
+   */
+  getMaterial() {
+    if (this.material) {
+      return this.material;
+    }
+    this.initMaterial();
+    return this.material;
+  }
+
+  /**
+   * Create shader instance and THREE.Material from the element attributes.
+   * Texture loading (shader update) is deferred if not attached to a scene yet,
+   * as it requires the scene's material system.
+   */
+  initMaterial() {
+    var data;
+    var Shader;
+    var shader;
+    this.sceneEl = this.sceneEl || this.closestScene();
+    data = this.data = this.buildData();
+    Shader = _shader_js__WEBPACK_IMPORTED_MODULE_2__.shaders[data.shader].Shader;
+    shader = this.shader = new Shader();
+    shader.el = this;
+    shader.init(data);
+    this.material = shader.material;
+    this.material.el = this;
+    if (this.id) {
+      this.material.name = this.id;
+    }
+    _utils_index_js__WEBPACK_IMPORTED_MODULE_6__.material.updateBaseMaterial(this.material, data);
+
+    // Texture loading requires the scene's material system, which is not available
+    // before the scene initialized its systems (e.g., when the material is created
+    // on-demand by an early `material` property type parse). Deferred to
+    // doConnectedCallback in that case.
+    if (this.sceneEl && this.sceneEl.systems && this.sceneEl.systems.material) {
+      shader.update(data);
+      this.shaderUpdated = true;
+    }
+  }
+
+  /**
+   * Parse element attributes against the combined base material + shader schema.
+   * HTML attributes are lowercase, so schema keys are matched case-insensitively
+   * (e.g., `metalnessmap` attribute maps to `metalnessMap`).
+   *
+   * @returns {object} Parsed data with defaults filled in.
+   */
+  buildData() {
+    var attr;
+    var attrNameMap = {};
+    var data = {};
+    var i;
+    var key;
+    var schema;
+    var shaderName = window.HTMLElement.prototype.getAttribute.call(this, 'shader') || 'standard';
+    if (!_shader_js__WEBPACK_IMPORTED_MODULE_2__.shaders[shaderName]) {
+      warn('Unknown shader `' + shaderName + '` for <a-material>. Falling back to `standard`.');
+      shaderName = 'standard';
+    }
+    schema = _utils_index_js__WEBPACK_IMPORTED_MODULE_6__.extend({}, _component_js__WEBPACK_IMPORTED_MODULE_1__.components.material.schema, _shader_js__WEBPACK_IMPORTED_MODULE_2__.shaders[shaderName].schema);
+    // An <a-material> cannot reference another material asset.
+    delete schema.material;
+    for (key in schema) {
+      attrNameMap[key.toLowerCase()] = key;
+      data[key] = (0,_schema_js__WEBPACK_IMPORTED_MODULE_3__.parseProperty)(undefined, schema[key]);
+    }
+    for (i = 0; i < this.attributes.length; i++) {
+      attr = this.attributes[i];
+      key = attrNameMap[attr.name];
+      if (!key) {
+        if (attr.name !== 'id' && attr.name !== 'mixin') {
+          warn('Unknown property `' + attr.name + '` for <a-material> with shader `' + shaderName + '`.');
+        }
+        continue;
+      }
+      data[key] = (0,_schema_js__WEBPACK_IMPORTED_MODULE_3__.parseProperty)(attr.value, schema[key]);
+    }
+    data.shader = shaderName;
+    this.schema = schema;
+    this.attrNameMap = attrNameMap;
+    return data;
+  }
+
+  /**
+   * Emit `loaded` once all textures referenced by the material have loaded,
+   * so `<a-assets>` blocks scene rendering until the material is fully ready.
+   */
+  loadWhenTexturesLoaded() {
+    var data = this.data;
+    var key;
+    var pending = 0;
+    var schema = this.schema;
+    var self = this;
+    for (key in schema) {
+      // `sphericalEnvMap` is deprecated and handled through the `envMap` path below.
+      if (schema[key].type !== 'map' || key === 'sphericalEnvMap') {
+        continue;
+      }
+      if (data[key]) {
+        pending++;
+      }
+    }
+    if (data.envMap || data.sphericalEnvMap) {
+      pending++;
+    }
+    if (pending === 0) {
+      this.load();
+      return;
+    }
+    this.addEventListener('materialtextureloaded', function onTextureLoaded() {
+      pending--;
+      if (pending > 0) {
+        return;
+      }
+      self.removeEventListener('materialtextureloaded', onTextureLoaded);
+      self.load();
+    });
+  }
+}
+customElements.define('a-material', AMaterial);
+
+// Cache of <a-material> elements backing inline `material(...)` definitions, keyed by
+// their properties string, so identical inline definitions share one material instance.
+var inlineMaterialEls = {};
+
+/**
+ * Create (or reuse) a material from an inline `material(...)` definition used by the
+ * `material` property type, e.g., `handMaterial: material(shader: flat; color: red)`.
+ *
+ * A detached <a-material> element backs the material. It is attached under the scene's
+ * <a-assets> so textures load and updates flow through the normal element lifecycle.
+ *
+ * @param {string} propsString - Inner properties string (e.g., `shader: flat; color: red`).
+ * @returns {object|null} THREE.Material or null on invalid input.
+ */
+(0,_propertyTypes_js__WEBPACK_IMPORTED_MODULE_4__.setInlineMaterialFactory)(function getOrCreateInlineMaterial(propsString) {
+  var el = inlineMaterialEls[propsString];
+  var key;
+  var props;
+  if (!el) {
+    props = _utils_styleParser_js__WEBPACK_IMPORTED_MODULE_5__.parse(propsString);
+    if (typeof props !== 'object') {
+      warn('Invalid inline material value: material(' + propsString + ')');
+      return null;
+    }
+    el = document.createElement('a-material');
+    el.isInlineMaterial = true;
+    el.inlineString = 'material(' + propsString + ')';
+    for (key in props) {
+      el.setAttribute(key, props[key]);
+    }
+    inlineMaterialEls[propsString] = el;
+  }
+  attachInlineMaterial(el);
+  return el.getMaterial();
+});
+
+/**
+ * Attach an inline material element to the scene so its textures can load.
+ * No-op until a scene exists; retried on every parse of the same definition.
+ */
+function attachInlineMaterial(el) {
+  var assetsEl;
+  var sceneEl;
+  if (el.isConnected) {
+    return;
+  }
+  sceneEl = document.querySelector('a-scene');
+  if (!sceneEl) {
+    return;
+  }
+  assetsEl = sceneEl.querySelector('a-assets');
+  if (assetsEl) {
+    assetsEl.appendChild(el);
+    return;
+  }
+
+  // No <a-assets>; wire the scene directly so textures can still load.
+  el.sceneEl = sceneEl;
+  el.getMaterial();
+  if (!el.shaderUpdated && sceneEl.systems.material) {
+    el.shader.update(el.data);
+    el.shaderUpdated = true;
+    sceneEl.systems.material.registerMaterial(el.material);
+  }
+}
+
+/***/ }),
+
 /***/ "./src/core/a-mixin.js":
 /*!*****************************!*\
   !*** ./src/core/a-mixin.js ***!
@@ -20457,6 +20690,7 @@ var knownTags = {
   'a-assets': true,
   'a-assets-items': true,
   'a-cubemap': true,
+  'a-material': true,
   'a-mixin': true,
   'a-node': true,
   'a-entity': true
@@ -21608,7 +21842,8 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export */   isValidDefaultCoordinate: () => (/* binding */ isValidDefaultCoordinate),
 /* harmony export */   isValidDefaultValue: () => (/* binding */ isValidDefaultValue),
 /* harmony export */   propertyTypes: () => (/* binding */ propertyTypes),
-/* harmony export */   registerPropertyType: () => (/* binding */ registerPropertyType)
+/* harmony export */   registerPropertyType: () => (/* binding */ registerPropertyType),
+/* harmony export */   setInlineMaterialFactory: () => (/* binding */ setInlineMaterialFactory)
 /* harmony export */ });
 /* harmony import */ var _utils_coordinates_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../utils/coordinates.js */ "./src/utils/coordinates.js");
 /* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
@@ -21619,6 +21854,20 @@ var warn = debug__WEBPACK_IMPORTED_MODULE_1___default()('core:propertyTypes:warn
 var propertyTypes = {};
 var nonCharRegex = /[,> .[\]:]/;
 var urlRegex = /url\((.+)\)/;
+var inlineMaterialRegex = /^material\((.*)\)$/;
+var inlineMaterialFactory = null;
+
+/**
+ * Register the factory the `material` property type uses to create materials from
+ * inline `material(...)` values. Set by the <a-material> module, which owns material
+ * creation, to avoid a circular dependency.
+ *
+ * @param {function} factory - Receives the properties string (e.g., `color: red`) and
+ *   returns a THREE.Material or null.
+ */
+function setInlineMaterialFactory(factory) {
+  inlineMaterialFactory = factory;
+}
 
 // Built-in property types.
 registerPropertyType('audio', '', assetParse, assetStringify);
@@ -21629,6 +21878,7 @@ registerPropertyType('color', '#FFF');
 registerPropertyType('int', 0, intParse);
 registerPropertyType('number', 0, numberParse);
 registerPropertyType('map', '', assetParse, assetStringify);
+registerPropertyType('material', null, materialParse, materialStringify, defaultEquals, false);
 registerPropertyType('model', '', assetParse, assetStringify);
 registerPropertyType('selector', null, selectorParse, selectorStringify, defaultEquals, false);
 registerPropertyType('selectorAll', null, selectorAllParse, selectorAllStringify, arrayEquals, false);
@@ -21758,6 +22008,65 @@ function assetStringify(value) {
   }
   return defaultStringify(value);
 }
+
+/**
+ * For material assets.
+ *
+ * @param {string|Element|THREE.Material} value - An ID selector to an `<a-material>`,
+ *   an inline `material(...)` definition, the `<a-material>` element itself, or a
+ *   THREE.Material instance.
+ * @returns {THREE.Material|null} The three.js material or null if not found.
+ */
+function materialParse(value) {
+  var el;
+  var match;
+  if (!value) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    // <a-material> element.
+    if (value.isMaterialAsset) {
+      return value.getMaterial();
+    }
+    // THREE.Material instance passthrough.
+    if (value.isMaterial) {
+      return value;
+    }
+    warn('Unable to parse material property value. ' + 'Expected a selector to <a-material>, an <a-material> element or a THREE.Material.');
+    return null;
+  }
+  if (value.charAt(0) === '#') {
+    el = document.getElementById(value.substring(1));
+    if (el && el.isMaterialAsset) {
+      return el.getMaterial();
+    }
+    warn('"' + value + '" is not an <a-material> asset.');
+    return null;
+  }
+
+  // Inline material (e.g., `material(shader: flat; color: red)`).
+  match = value.match(inlineMaterialRegex);
+  if (match) {
+    if (!inlineMaterialFactory) {
+      warn('Inline material syntax is not available.');
+      return null;
+    }
+    return inlineMaterialFactory(match[1]);
+  }
+  warn('Unable to parse material property value "' + value + '". ' + 'Expected an ID selector to an <a-material> (e.g., #myMaterial) or an inline ' + 'definition (e.g., material(color: red)).');
+  return null;
+}
+function materialStringify(value) {
+  if (value && value.isMaterial && value.el && value.el.isMaterialAsset) {
+    if (value.el.id) {
+      return '#' + value.el.id;
+    }
+    if (value.el.inlineString) {
+      return value.el.inlineString;
+    }
+  }
+  return defaultStringify(value);
+}
 function defaultParse(value) {
   return value;
 }
@@ -21854,6 +22163,9 @@ function isValidDefaultValue(type, defaultVal) {
     return false;
   }
   if (type === 'map' && typeof defaultVal !== 'string') {
+    return false;
+  }
+  if (type === 'material' && typeof defaultVal !== 'string' && defaultVal !== null) {
     return false;
   }
   if (type === 'model' && typeof defaultVal !== 'string') {
@@ -23983,6 +24295,11 @@ var materialMappings = {};
 Object.keys(_core_component_js__WEBPACK_IMPORTED_MODULE_0__.components.material.schema).forEach(addMapping);
 Object.keys(_core_shader_js__WEBPACK_IMPORTED_MODULE_1__.shaders.standard.schema).forEach(addMapping);
 function addMapping(prop) {
+  // The `material` property (material asset reference) would collide with the material
+  // component name itself. Use `material="material: #ref"` on primitives instead.
+  if (prop === 'material') {
+    return;
+  }
   // To hyphenated.
   var htmlAttrName = prop.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
   if (prop === 'fog') {
@@ -28825,9 +29142,13 @@ if ((0,_device_js__WEBPACK_IMPORTED_MODULE_0__.isIOS)()) {
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   createCompatibleTexture: () => (/* binding */ createCompatibleTexture),
+/* harmony export */   disposeMaterial: () => (/* binding */ disposeMaterial),
 /* harmony export */   handleTextureEvents: () => (/* binding */ handleTextureEvents),
 /* harmony export */   isCompatibleTexture: () => (/* binding */ isCompatibleTexture),
+/* harmony export */   parseBlending: () => (/* binding */ parseBlending),
+/* harmony export */   parseSide: () => (/* binding */ parseSide),
 /* harmony export */   setTextureProperties: () => (/* binding */ setTextureProperties),
+/* harmony export */   updateBaseMaterial: () => (/* binding */ updateBaseMaterial),
 /* harmony export */   updateDistortionMap: () => (/* binding */ updateDistortionMap),
 /* harmony export */   updateEnvMap: () => (/* binding */ updateEnvMap),
 /* harmony export */   updateMap: () => (/* binding */ updateMap),
@@ -28850,6 +29171,111 @@ var FILTERING_TYPES = {
   'linear-mipmap-nearest': three__WEBPACK_IMPORTED_MODULE_2__.LinearMipMapNearestFilter,
   'linear-mipmap-linear': three__WEBPACK_IMPORTED_MODULE_2__.LinearMipmapLinearFilter
 };
+
+/**
+ * Return a three.js constant determining which material face sides to render
+ * based on the side parameter (passed as a component property).
+ *
+ * @param {string} [side=front] - `front`, `back`, or `double`.
+ * @returns {number} THREE.FrontSide, THREE.BackSide, or THREE.DoubleSide.
+ */
+function parseSide(side) {
+  switch (side) {
+    case 'back':
+      {
+        return three__WEBPACK_IMPORTED_MODULE_2__.BackSide;
+      }
+    case 'double':
+      {
+        return three__WEBPACK_IMPORTED_MODULE_2__.DoubleSide;
+      }
+    default:
+      {
+        // Including case `front`.
+        return three__WEBPACK_IMPORTED_MODULE_2__.FrontSide;
+      }
+  }
+}
+
+/**
+ * Return a three.js constant determining blending
+ *
+ * @param {string} [blending=normal] - `none`, additive`, `subtractive`,`multiply` or `normal`.
+ * @returns {number}
+ */
+function parseBlending(blending) {
+  switch (blending) {
+    case 'none':
+      {
+        return three__WEBPACK_IMPORTED_MODULE_2__.NoBlending;
+      }
+    case 'additive':
+      {
+        return three__WEBPACK_IMPORTED_MODULE_2__.AdditiveBlending;
+      }
+    case 'subtractive':
+      {
+        return three__WEBPACK_IMPORTED_MODULE_2__.SubtractiveBlending;
+      }
+    case 'multiply':
+      {
+        return three__WEBPACK_IMPORTED_MODULE_2__.MultiplyBlending;
+      }
+    default:
+      {
+        return three__WEBPACK_IMPORTED_MODULE_2__.NormalBlending;
+      }
+  }
+}
+
+/**
+ * Set base material properties shared by all shaders (side, blending, opacity...)
+ * given data following the base material component schema.
+ *
+ * @param {THREE.Material} material - Material to update.
+ * @param {object} data - Material component (or <a-material>) data.
+ */
+function updateBaseMaterial(material, data) {
+  var side = parseSide(data.side);
+
+  // Changes to these properties require the shader program to be rebuilt,
+  // using the material itself as the source of truth.
+  if (material.alphaTest !== data.alphaTest || material.side !== side || material.vertexColors !== data.vertexColorsEnabled) {
+    material.needsUpdate = true;
+  }
+  material.alphaTest = data.alphaTest;
+  material.depthTest = data.depthTest !== false;
+  material.depthWrite = data.depthWrite !== false;
+  material.opacity = data.opacity;
+  material.flatShading = data.flatShading;
+  material.side = side;
+  material.transparent = data.transparent !== false || data.opacity < 1.0;
+  material.vertexColors = data.vertexColorsEnabled;
+  material.visible = data.visible;
+  material.blending = parseBlending(data.blending);
+  // three.js r178+ requires premultipliedAlpha for MultiplyBlending and
+  // SubtractiveBlending, so force it on regardless of the user-supplied value.
+  material.premultipliedAlpha = data.blending === 'multiply' || data.blending === 'subtractive' ? true : data.premultipliedAlpha;
+  material.dithering = data.dithering;
+}
+
+/**
+ * Dispose of material from memory and unsubscribe material from scene updates like fog.
+ *
+ * @param {THREE.Material} material - Material to dispose.
+ * @param {object} system - Material system.
+ */
+function disposeMaterial(material, system) {
+  material.dispose();
+  system.unregisterMaterial(material);
+
+  // Dispose textures on this material
+  Object.keys(material).filter(function (propName) {
+    return material[propName] && material[propName].isTexture;
+  }).forEach(function (mapName) {
+    material[mapName].dispose();
+  });
+}
 
 /**
  * Set texture properties such as repeat and offset.
@@ -29651,9 +30077,22 @@ function toCamelCase(str) {
  * Split a string into chunks matching `<key>: <value>`
  */
 var getKeyValueChunks = function () {
-  var chunks = [];
-  var hasUnclosedUrl = /url\([^)]+$/;
-  return function getKeyValueChunks(raw) {
+  // Parenthesized values can contain semicolons (e.g., data URIs in `url(...)` or
+  // inline materials in `material(...)`); don't split inside them.
+  function hasUnclosedParen(str) {
+    var depth = 0;
+    var i;
+    for (i = 0; i < str.length; i++) {
+      if (str[i] === '(') {
+        depth++;
+      }
+      if (str[i] === ')' && depth > 0) {
+        depth--;
+      }
+    }
+    return depth > 0;
+  }
+  return function getKeyValueChunks(raw, chunks) {
     var chunk = '';
     var nextSplit;
     var offset = 0;
@@ -29665,9 +30104,7 @@ var getKeyValueChunks = function () {
         nextSplit = raw.length;
       }
       chunk += raw.substring(offset, nextSplit);
-
-      // data URIs can contain semicolons, so make sure we get the whole thing
-      if (hasUnclosedUrl.test(chunk)) {
+      if (hasUnclosedParen(chunk)) {
         chunk += ';';
         offset = nextSplit + 1;
         continue;
@@ -29679,6 +30116,13 @@ var getKeyValueChunks = function () {
     return chunks;
   };
 }();
+
+// Assigning a parsed value to `obj` can synchronously trigger a nested parse (e.g.,
+// a property setter parsing an inline `material(...)` value), which must not reuse
+// the pooled chunks array of the ongoing call. Pool one chunks array per nesting
+// level, and cap nesting at two levels; anything deeper is not a supported usage.
+var pooledChunks = [[], []];
+var parseDepth = 0;
 
 /**
  * Convert a style attribute string to an object.
@@ -29694,17 +30138,25 @@ function styleParse(str, obj) {
   var key;
   var val;
   obj = obj || {};
-  chunks = getKeyValueChunks(str);
-  for (i = 0; i < chunks.length; i++) {
-    item = chunks[i];
-    if (!item) {
-      continue;
+  if (parseDepth >= pooledChunks.length) {
+    throw new Error('Exceeded maximum style string parse nesting (' + pooledChunks.length + ' levels).');
+  }
+  chunks = getKeyValueChunks(str, pooledChunks[parseDepth]);
+  parseDepth++;
+  try {
+    for (i = 0; i < chunks.length; i++) {
+      item = chunks[i];
+      if (!item) {
+        continue;
+      }
+      // Split with `.indexOf` rather than `.split` because the value may also contain colons.
+      pos = item.indexOf(':');
+      key = item.substr(0, pos).trim();
+      val = item.substr(pos + 1).trim();
+      obj[toCamelCase(key)] = val;
     }
-    // Split with `.indexOf` rather than `.split` because the value may also contain colons.
-    pos = item.indexOf(':');
-    key = item.substr(0, pos).trim();
-    val = item.substr(pos + 1).trim();
-    obj[toCamelCase(key)] = val;
+  } finally {
+    parseDepth--;
   }
   return obj;
 }
@@ -62562,22 +63014,24 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _core_readyState_js__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./core/readyState.js */ "./src/core/readyState.js");
 /* harmony import */ var _core_a_assets_js__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./core/a-assets.js */ "./src/core/a-assets.js");
 /* harmony import */ var _core_a_cubemap_js__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ./core/a-cubemap.js */ "./src/core/a-cubemap.js");
-/* harmony import */ var _core_a_mixin_js__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ./core/a-mixin.js */ "./src/core/a-mixin.js");
-/* harmony import */ var _utils_index_js__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(/*! ./utils/index.js */ "./src/utils/index.js");
-/* harmony import */ var _package_json__WEBPACK_IMPORTED_MODULE_17__ = __webpack_require__(/*! ../package.json */ "./package.json");
-/* harmony import */ var _components_index_js__WEBPACK_IMPORTED_MODULE_18__ = __webpack_require__(/*! ./components/index.js */ "./src/components/index.js");
-/* harmony import */ var _geometries_index_js__WEBPACK_IMPORTED_MODULE_19__ = __webpack_require__(/*! ./geometries/index.js */ "./src/geometries/index.js");
-/* harmony import */ var _shaders_index_js__WEBPACK_IMPORTED_MODULE_20__ = __webpack_require__(/*! ./shaders/index.js */ "./src/shaders/index.js");
-/* harmony import */ var _systems_index_js__WEBPACK_IMPORTED_MODULE_21__ = __webpack_require__(/*! ./systems/index.js */ "./src/systems/index.js");
-/* harmony import */ var _extras_primitives_getMeshMixin_js__WEBPACK_IMPORTED_MODULE_22__ = __webpack_require__(/*! ./extras/primitives/getMeshMixin.js */ "./src/extras/primitives/getMeshMixin.js");
-/* harmony import */ var _extras_components_index_js__WEBPACK_IMPORTED_MODULE_23__ = __webpack_require__(/*! ./extras/components/index.js */ "./src/extras/components/index.js");
-/* harmony import */ var _extras_primitives_index_js__WEBPACK_IMPORTED_MODULE_24__ = __webpack_require__(/*! ./extras/primitives/index.js */ "./src/extras/primitives/index.js");
+/* harmony import */ var _core_a_material_js__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ./core/a-material.js */ "./src/core/a-material.js");
+/* harmony import */ var _core_a_mixin_js__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(/*! ./core/a-mixin.js */ "./src/core/a-mixin.js");
+/* harmony import */ var _utils_index_js__WEBPACK_IMPORTED_MODULE_17__ = __webpack_require__(/*! ./utils/index.js */ "./src/utils/index.js");
+/* harmony import */ var _package_json__WEBPACK_IMPORTED_MODULE_18__ = __webpack_require__(/*! ../package.json */ "./package.json");
+/* harmony import */ var _components_index_js__WEBPACK_IMPORTED_MODULE_19__ = __webpack_require__(/*! ./components/index.js */ "./src/components/index.js");
+/* harmony import */ var _geometries_index_js__WEBPACK_IMPORTED_MODULE_20__ = __webpack_require__(/*! ./geometries/index.js */ "./src/geometries/index.js");
+/* harmony import */ var _shaders_index_js__WEBPACK_IMPORTED_MODULE_21__ = __webpack_require__(/*! ./shaders/index.js */ "./src/shaders/index.js");
+/* harmony import */ var _systems_index_js__WEBPACK_IMPORTED_MODULE_22__ = __webpack_require__(/*! ./systems/index.js */ "./src/systems/index.js");
+/* harmony import */ var _extras_primitives_getMeshMixin_js__WEBPACK_IMPORTED_MODULE_23__ = __webpack_require__(/*! ./extras/primitives/getMeshMixin.js */ "./src/extras/primitives/getMeshMixin.js");
+/* harmony import */ var _extras_components_index_js__WEBPACK_IMPORTED_MODULE_24__ = __webpack_require__(/*! ./extras/components/index.js */ "./src/extras/components/index.js");
+/* harmony import */ var _extras_primitives_index_js__WEBPACK_IMPORTED_MODULE_25__ = __webpack_require__(/*! ./extras/primitives/index.js */ "./src/extras/primitives/index.js");
 
 
 
 
 
  // Depends on ANode and core components.
+
 
 
 
@@ -62601,7 +63055,7 @@ __webpack_require__.r(__webpack_exports__);
 // Extras.
 
 
-var debug = _utils_index_js__WEBPACK_IMPORTED_MODULE_16__.debug;
+var debug = _utils_index_js__WEBPACK_IMPORTED_MODULE_17__.debug;
 var error = debug('A-Frame:error');
 var warn = debug('A-Frame:warn');
 if (window.document.currentScript && window.document.currentScript.parentNode !== window.document.head && !window.debug) {
@@ -62614,11 +63068,11 @@ if (!window.cordova && window.location.protocol === 'file:') {
 }
 
 // CSS.
-if (_utils_index_js__WEBPACK_IMPORTED_MODULE_16__.device.isBrowserEnvironment) {
+if (_utils_index_js__WEBPACK_IMPORTED_MODULE_17__.device.isBrowserEnvironment) {
   window.logs = debug;
   __webpack_require__(/*! ./style/aframe.css */ "./src/style/aframe.css");
 }
-console.log('A-Frame Version: 1.8.0 (Date 2026-06-28, Commit #064590b5)');
+console.log('A-Frame Version: 1.8.0 (Date 2026-07-04, Commit #ef50899e)');
 console.log('THREE Version (https://github.com/supermedium/three.js):', _lib_three_js__WEBPACK_IMPORTED_MODULE_1__["default"].REVISION);
 
 // Wait for ready state, unless user asynchronously initializes A-Frame.
@@ -62640,7 +63094,7 @@ var AFRAME = globalThis.AFRAME = {
   registerShader: _core_shader_js__WEBPACK_IMPORTED_MODULE_9__.registerShader,
   registerSystem: _core_system_js__WEBPACK_IMPORTED_MODULE_10__.registerSystem,
   primitives: {
-    getMeshMixin: _extras_primitives_getMeshMixin_js__WEBPACK_IMPORTED_MODULE_22__["default"],
+    getMeshMixin: _extras_primitives_getMeshMixin_js__WEBPACK_IMPORTED_MODULE_23__["default"],
     primitives: _extras_primitives_primitives_js__WEBPACK_IMPORTED_MODULE_8__.primitives
   },
   scenes: _core_scene_scenes_js__WEBPACK_IMPORTED_MODULE_3__["default"],
@@ -62649,8 +63103,8 @@ var AFRAME = globalThis.AFRAME = {
   systems: _core_system_js__WEBPACK_IMPORTED_MODULE_10__.systems,
   emitReady: _core_readyState_js__WEBPACK_IMPORTED_MODULE_12__.emitReady,
   THREE: _lib_three_js__WEBPACK_IMPORTED_MODULE_1__["default"],
-  utils: _utils_index_js__WEBPACK_IMPORTED_MODULE_16__,
-  version: _package_json__WEBPACK_IMPORTED_MODULE_17__.version
+  utils: _utils_index_js__WEBPACK_IMPORTED_MODULE_17__,
+  version: _package_json__WEBPACK_IMPORTED_MODULE_18__.version
 };
 /* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (AFRAME);
 })();
